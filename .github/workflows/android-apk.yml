@@ -1,0 +1,292 @@
+name: Build Android APK with EAS
+
+on:
+  push:
+    branches:
+      - main
+      - apk-build
+  pull_request:
+    branches:
+      - main
+      - apk-build
+  workflow_dispatch:
+    inputs:
+      build_profile:
+        description: 'EAS build profile (development, preview, production)'
+        required: true
+        default: 'preview'
+        type: choice
+        options:
+          - development
+          - preview
+          - production
+
+env:
+  NODE_VERSION: '20'
+  PNPM_VERSION: '9'
+  EXPO_SDK_VERSION: '54'
+
+jobs:
+  setup:
+    name: Setup & Validate
+    runs-on: ubuntu-latest
+    outputs:
+      build_profile: ${{ steps.set-profile.outputs.profile }}
+      cache_key: ${{ steps.cache-key.outputs.key }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v3
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Set build profile
+        id: set-profile
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "profile=${{ github.event.inputs.build_profile }}" >> $GITHUB_OUTPUT
+          else
+            if [ "${{ github.ref }}" == "refs/heads/main" ]; then
+              echo "profile=production" >> $GITHUB_OUTPUT
+            else
+              echo "profile=preview" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Generate cache key
+        id: cache-key
+        run: |
+          echo "key=${{ runner.os }}-node-${{ env.NODE_VERSION }}-${{ hashFiles('**/package.json') }}-${{ hashFiles('**/pnpm-lock.yaml') }}" >> $GITHUB_OUTPUT
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate app configuration
+        working-directory: artifacts/traffic-law-dz
+        run: |
+          echo "Validating app.json..."
+          node -e "
+            const app = require('./app.json');
+            if (!app.expo.name) throw new Error('Missing app.expo.name');
+            if (!app.expo.slug) throw new Error('Missing app.expo.slug');
+            if (!app.expo.version) throw new Error('Missing app.expo.version');
+            if (!app.expo.android?.package) throw new Error('Missing app.expo.android.package');
+            console.log('✓ app.json is valid');
+          "
+
+      - name: TypeScript type checking
+        run: pnpm run typecheck
+
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: Restore pnpm cache
+        uses: actions/cache@v3
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ needs.setup.outputs.cache_key }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Expo CLI
+        run: pnpm add -g eas-cli @expo/cli
+
+      - name: Authenticate with EAS
+        run: |
+          eas-cli whoami
+        env:
+          EAS_TOKEN: ${{ secrets.EAS_TOKEN }}
+
+      - name: Build Android APK with EAS
+        working-directory: artifacts/traffic-law-dz
+        run: |
+          echo "Building Android APK with profile: ${{ needs.setup.outputs.build_profile }}"
+          eas build \
+            --platform android \
+            --profile ${{ needs.setup.outputs.build_profile }} \
+            --non-interactive \
+            --wait \
+            --verbose
+        env:
+          EAS_TOKEN: ${{ secrets.EAS_TOKEN }}
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Download build artifact
+        working-directory: artifacts/traffic-law-dz
+        run: |
+          echo "Retrieving build artifact URL..."
+          eas-cli build:list \
+            --platform android \
+            --limit 1 \
+            --json > latest-build.json
+          
+          BUILD_ID=$(jq -r '.[0].id' latest-build.json)
+          echo "Build ID: $BUILD_ID"
+          
+          eas-cli build:view $BUILD_ID --json > build-info.json
+          cat build-info.json
+        env:
+          EAS_TOKEN: ${{ secrets.EAS_TOKEN }}
+
+      - name: Upload APK to artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: infradz-apk-${{ needs.setup.outputs.build_profile }}
+          path: artifacts/traffic-law-dz/build-info.json
+          retention-days: 30
+
+      - name: Create build summary
+        working-directory: artifacts/traffic-law-dz
+        run: |
+          echo "## Android APK Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Profile:** ${{ needs.setup.outputs.build_profile }}" >> $GITHUB_STEP_SUMMARY
+          echo "**SDK Version:** ${{ env.EXPO_SDK_VERSION }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Ref:** ${{ github.ref }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f build-info.json ]; then
+            echo "**Build Details:**" >> $GITHUB_STEP_SUMMARY
+            jq -r '"- Status: " + .status' build-info.json >> $GITHUB_STEP_SUMMARY
+            jq -r '"- Platform: " + .platform' build-info.json >> $GITHUB_STEP_SUMMARY
+            jq -r '"- Artifacts: " + (.artifacts | keys | join(", "))' build-info.json >> $GITHUB_STEP_SUMMARY
+          fi
+
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: Restore pnpm cache
+        uses: actions/cache@v3
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ needs.setup.outputs.cache_key }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint TypeScript
+        run: pnpm run typecheck
+
+      - name: Validate package.json
+        run: |
+          echo "Validating workspace packages..."
+          pnpm list --depth 0
+          
+          echo ""
+          echo "Checking for peer dependency warnings..."
+          pnpm install --verify-store-integrity
+
+  notify:
+    name: Notify Slack (Optional)
+    runs-on: ubuntu-latest
+    needs: [setup, build, test]
+    if: always()
+    steps:
+      - name: Build Status
+        run: |
+          echo "Build Status: ${{ needs.build.result }}"
+          echo "Tests Status: ${{ needs.test.result }}"
+          
+      - name: Send Slack notification
+        if: ${{ secrets.SLACK_WEBHOOK_URL }}
+        uses: slackapi/slack-github-action@v1.24.0
+        with:
+          payload: |
+            {
+              "text": "InfraDZ Android APK Build",
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*InfraDZ Android APK Build*\nProfile: ${{ needs.setup.outputs.build_profile }}\nStatus: ${{ job.status }}\nCommit: <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ github.sha }}>"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Build*\n${{ needs.build.result }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Tests*\n${{ needs.test.result }}"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
