@@ -1,0 +1,27 @@
+kind = "mobile"
+previewPath = "/"
+title = "قانون المرور الجزائري"
+version = "1.0.0"
+id = "artifacts/traffic-law-dz"
+router = "expo-domain"
+
+[[integratedSkills]]
+name = "expo"
+version = "1.0.0"
+
+[[services]]
+ensurePreviewReachable = "/status"
+name = "expo"
+paths = [ "/" ]
+localPort = 22656
+
+[services.development]
+run = "pnpm --filter @workspace/traffic-law-dz run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/traffic-law-dz", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/traffic-law-dz", "run", "serve" ]
+
+[services.env]
+PORT = "22656"
+BASE_PATH = "/"

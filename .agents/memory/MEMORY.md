@@ -1,0 +1,2 @@
+- [Traffic Law DZ app](traffic-law-dz.md) — Expo mobile app for Algerian traffic law; real violations/fines extracted from PDF قانون_المرور 09-26.
+- [InfraDZ branding](infradz-branding.md) — InfraDZ brand fully applied: logo PNG at assets/images/infradz-logo.png, offline AI uses searchLegalKnowledge() from data/legalKnowledge.ts, palette: red #DC143C + green #006233 + black #0D0D0D.

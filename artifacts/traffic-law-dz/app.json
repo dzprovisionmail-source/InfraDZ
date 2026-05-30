@@ -1,0 +1,46 @@
+{
+  "expo": {
+    "name": "InfraDZ",
+    "slug": "traffic-law-dz",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/infradz-logo.png",
+    "scheme": "traffic-law-dz",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/images/infradz-logo.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0D0D0D"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.infradz.dz"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/infradz-logo.png",
+        "backgroundColor": "#0D0D0D"
+      },
+      "package": "com.infradz.dz",
+      "versionCode": 1
+    },
+    "web": {
+      "favicon": "./assets/images/infradz-logo.png"
+    },
+    "plugins": [
+      [
+        "expo-router",
+        {
+          "origin": "https://replit.com/"
+        }
+      ],
+      "expo-font",
+      "expo-web-browser"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    }
+  }
+}
