@@ -241,8 +241,7 @@ jobs:
             --platform android \
             --profile ${{ needs.setup.outputs.build_profile }} \
             --non-interactive \
-            --wait \
-            --verbose
+            --wait
         env:
           EAS_TOKEN: ${{ secrets.EAS_TOKEN }}
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
