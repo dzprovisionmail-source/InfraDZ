@@ -9,9 +9,6 @@
       "android": {
         "buildType": "apk",
         "gradleCommand": ":app:assembleDebug"
-      },
-      "ios": {
-        "buildType": "simulator"
       }
     },
     "preview": {
@@ -19,9 +16,6 @@
       "android": {
         "buildType": "apk",
         "gradleCommand": ":app:assembleRelease"
-      },
-      "ios": {
-        "buildType": "archive"
       }
     },
     "production": {
@@ -30,10 +24,6 @@
         "buildType": "app-bundle",
         "gradleCommand": ":app:bundleRelease",
         "withoutCredentials": false
-      },
-      "ios": {
-        "buildType": "archive",
-        "schemeBuildConfiguration": "Release"
       }
     }
   },
