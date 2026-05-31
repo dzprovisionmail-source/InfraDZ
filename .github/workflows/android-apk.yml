@@ -1,0 +1,278 @@
+name: Build Android APK with EAS
+
+on:
+  push:
+    branches:
+      - main
+      - apk-build
+  pull_request:
+    branches:
+      - main
+      - apk-build
+  workflow_dispatch:
+    inputs:
+      build_profile:
+        description: 'EAS build profile (development, preview, production)'
+        required: true
+        default: 'preview'
+        type: choice
+        options:
+          - development
+          - preview
+          - production
+
+env:
+  NODE_VERSION: '20'
+  PNPM_VERSION: '9'
+  EXPO_SDK_VERSION: '54'
+
+jobs:
+  setup:
+    name: Setup & Validate
+    runs-on: ubuntu-latest
+    outputs:
+      build_profile: ${{ steps.set-profile.outputs.profile }}
+      cache_key: ${{ steps.cache-key.outputs.key }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: Setup pnpm cache
+        uses: actions/cache@v3
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Set build profile
+        id: set-profile
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "profile=${{ github.event.inputs.build_profile }}" >> $GITHUB_OUTPUT
+          else
+            if [ "${{ github.ref }}" == "refs/heads/main" ]; then
+              echo "profile=production" >> $GITHUB_OUTPUT
+            else
+              echo "profile=preview" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Generate cache key
+        id: cache-key
+        shell: bash
+        run: echo "key=${{ runner.os }}-node-${{ env.NODE_VERSION }}-${{ hashFiles('**/package.json') }}-${{ hashFiles('**/pnpm-lock.yaml') }}" >> $GITHUB_OUTPUT
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Validate app configuration
+        working-directory: artifacts/traffic-law-dz
+        shell: bash
+        run: |
+          echo "Validating app.json..."
+          node -e "
+            const app = require('./app.json');
+            if (!app.expo.name) throw new Error('Missing app.expo.name');
+            if (!app.expo.slug) throw new Error('Missing app.expo.slug');
+            if (!app.expo.version) throw new Error('Missing app.expo.version');
+            if (!app.expo.android?.package) throw new Error('Missing app.expo.android.package');
+            console.log('✓ app.json is valid');
+          "
+
+      - name: TypeScript type checking
+        run: pnpm run typecheck
+
+  validate:
+    name: Validate Configuration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Validate app.json
+        working-directory: artifacts/traffic-law-dz
+        shell: bash
+        run: |
+          echo "Validating app.json structure..."
+          node -e "
+            const app = require('./app.json');
+            const required = ['name', 'slug', 'version', 'orientation', 'icon', 'scheme'];
+            const androidRequired = ['package', 'versionCode'];
+            
+            required.forEach(key => {
+              if (!app.expo[key]) {
+                throw new Error(\`Missing expo.\${key}\`);
+              }
+            });
+            
+            androidRequired.forEach(key => {
+              if (!app.expo.android[key]) {
+                throw new Error(\`Missing expo.android.\${key}\`);
+              }
+            });
+            
+            console.log('✓ app.json validation passed');
+            console.log('App Name:', app.expo.name);
+            console.log('Android Package:', app.expo.android.package);
+            console.log('Version:', app.expo.version);
+          "
+
+      - name: Validate eas.json
+        working-directory: artifacts/traffic-law-dz
+        shell: bash
+        run: |
+          if [ -f eas.json ]; then
+            echo "✓ eas.json exists"
+            node -e "
+              const eas = require('./eas.json');
+              const profiles = ['development', 'preview', 'production'];
+              profiles.forEach(profile => {
+                if (!eas.build[profile]) {
+                  throw new Error(\`Missing build profile: \${profile}\`);
+                }
+              });
+              console.log('✓ All build profiles configured');
+            "
+          else
+            echo "✗ eas.json not found"
+            exit 1
+          fi
+
+      - name: Check required files
+        working-directory: artifacts/traffic-law-dz
+        shell: bash
+        run: |
+          echo "Checking required files..."
+          files=("app.json" "eas.json" "package.json" "tsconfig.json" "babel.config.js")
+          for file in "${files[@]}"; do
+            if [ -f "$file" ]; then
+              echo "✓ $file found"
+            else
+              echo "✗ $file NOT found"
+              exit 1
+            fi
+          done
+
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    needs: [setup, validate]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        shell: bash
+        run: echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: Restore pnpm cache
+        uses: actions/cache@v3
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: ${{ needs.setup.outputs.cache_key }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Setup EAS CLI
+        run: npm install -g eas-cli
+
+      - name: Verify EAS Configuration
+        working-directory: artifacts/traffic-law-dz
+        shell: bash
+        run: |
+          echo "Checking eas.json configuration..."
+          if [ ! -f eas.json ]; then
+            echo "ERROR: eas.json not found!"
+            exit 1
+          fi
+          echo "✓ eas.json found"
+          echo "Checking for required secrets..."
+          if [ -z "${{ secrets.EAS_TOKEN }}" ]; then
+            echo "WARNING: EAS_TOKEN not configured in GitHub secrets"
+            echo "Build will attempt unauthenticated access"
+          else
+            echo "✓ EAS_TOKEN is configured"
+          fi
+
+      - name: Build Android APK with EAS
+        working-directory: artifacts/traffic-law-dz
+        shell: bash
+        run: |
+          echo "Building Android APK with profile: ${{ needs.setup.outputs.build_profile }}"
+          eas build \
+            --platform android \
+            --profile ${{ needs.setup.outputs.build_profile }} \
+            --non-interactive \
+            --wait
+        env:
+          EAS_TOKEN: ${{ secrets.EAS_TOKEN }}
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Build Success Summary
+        if: success()
+        shell: bash
+        run: |
+          echo "## ✅ Android APK Build Successful" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Build Profile:** ${{ needs.setup.outputs.build_profile }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Platform:** Android (Expo SDK 54)" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** [${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Next Steps:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Download APK from EAS dashboard" >> $GITHUB_STEP_SUMMARY
+          echo "- Test on Android device" >> $GITHUB_STEP_SUMMARY
+          echo "- Submit to Google Play Store" >> $GITHUB_STEP_SUMMARY
+
+      - name: Build Failure Summary
+        if: failure()
+        shell: bash
+        run: |
+          echo "## ❌ Android APK Build Failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Profile:** ${{ needs.setup.outputs.build_profile }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** [${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Troubleshooting:**" >> $GITHUB_STEP_SUMMARY
+          echo "1. Check build logs above" >> $GITHUB_STEP_SUMMARY
+          echo "2. Verify EAS_TOKEN secret is set" >> $GITHUB_STEP_SUMMARY
+          echo "3. Check eas.json configuration" >> $GITHUB_STEP_SUMMARY
+          echo "4. See BUILD_GUIDE.md for common issues" >> $GITHUB_STEP_SUMMARY
